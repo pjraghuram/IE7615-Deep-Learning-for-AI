@@ -1,0 +1,4 @@
+Model,Architecture,Layers,Params,Trainable Params,Epochs Run,Best Epoch,Train Acc,Val Acc,Train Time (s)
+MobileNetV2,MobileNetV2 (frozen) + Dense 256,165,2604681,346697,19,14,0.9422,0.8833,553
+ResNet50V2,ResNet50V2 (frozen) + Dense 256,201,24108105,543305,16,11,0.9512,0.8924,1430
+EfficientNetB0,EfficientNetB0 (frozen) + Dense 256,248,4396268,346697,11,6,0.9453,0.9152,480

@@ -1,0 +1,8 @@
+Model,Type,Architecture,Layers,Params,Train Acc,Val Acc,Test Acc,Train Time (s),Gap (Train-Test)
+CNN_1,Simple CNN,"Conv [32, 64]",22,25719945,0.7305,0.5998,0.612,1390,0.1185
+CNN_2,Simple CNN,"Conv [32, 64, 64]",27,6489545,0.7619,0.6299,0.6302,2584,0.1317
+CNN_3,Simple CNN,"Conv [32, 64, 128]",27,12949257,0.7537,0.6308,0.6293,1956,0.1244
+CNN_4,Simple CNN,"Conv [32, 64, 128, 128]",32,3463561,0.8006,0.6645,0.6812,1877,0.1194
+MobileNetV2,Pretrained,MobileNetV2 (frozen) + Dense 256,165,2604681,0.9824,0.8833,0.898,553,0.0844
+ResNet50V2,Pretrained,ResNet50V2 (frozen) + Dense 256,201,24108105,0.9842,0.8924,0.9035,1430,0.0807
+EfficientNetB0,Pretrained,EfficientNetB0 (frozen) + Dense 256,248,4396268,0.9871,0.9152,0.9235,480,0.0636
