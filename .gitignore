@@ -16,3 +16,12 @@ __pycache__/
 
 # Empty starter notebook
 milestone1.ipynb
+
+# Milestone 2 generated detection dataset
+milestone2/data/generated/
+
+# YOLO training artifacts and model weights
+milestone2/results/runs/
+milestone2/results/weights/
+milestone2/**/*.pt
+milestone2/**/*.onnx
