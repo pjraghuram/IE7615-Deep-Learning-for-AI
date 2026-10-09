@@ -1,0 +1,82 @@
+path: milestone2/data/generated
+
+train: images/train
+val: images/val
+test: images/test
+
+nc: 73
+
+names:
+  0: Basketball
+  1: Water bottle
+  2: NoteBook
+  3: Toy Car
+  4: Computer mouse
+  5: Capybara Toy
+  6: Apple
+  7: Cat
+  8: Marshall Speaker
+  9: Nike sneakers
+  10: Mug
+  11: Computer Keyboard
+  12: Mobile phone
+  13: Sunglasses
+  14: Water Tumbler
+  15: Sandisk Portable SSD
+  16: Controller
+  17: Rubiks cube
+  18: Plant
+  19: Airpod
+  20: Toy Bunny
+  21: Guitar
+  22: Bracelet
+  23: Plush doll
+  24: Watch
+  25: Red Sox Cap
+  26: Tennis ball
+  27: Banana
+  28: Orange
+  29: Tennis racket
+  30: UNO card box
+  31: Sound Card
+  32: Duck
+  33: Table Tennis Racket
+  34: Badminton racket
+  35: Pencil case
+  36: Candle
+  37: Perfume bottle
+  38: Scissors
+  39: Clutcher
+  40: Table fan
+  41: Mouth guard case
+  42: Swimming Goggles
+  43: Anime Figurine
+  44: Wayfarer Sunglasses
+  45: iWatch
+  46: Backpack
+  47: Wireless powerbank
+  48: Pickleball bat
+  49: Hairbrush
+  50: Tissue
+  51: Spoon
+  52: Moisturizer
+  53: Purse
+  54: Scientific Calculator
+  55: Trader Joe's Bag
+  56: Power Bank
+  57: Footstool
+  58: Comb
+  59: Sleep Mask
+  60: Card wallet
+  61: Headphones
+  62: Measuring Bottle
+  63: RGB Projector
+  64: Analog watch
+  65: Hair oil
+  66: Men's Wallet
+  67: Neck Pillow
+  68: Knife
+  69: Astronaut projector
+  70: Sloth Plushie
+  71: Dog
+  72: Bowl

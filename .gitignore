@@ -25,3 +25,7 @@ milestone2/results/runs/
 milestone2/results/weights/
 milestone2/**/*.pt
 milestone2/**/*.onnx
+
+# Milestone 2 temporary debug outputs
+milestone2/results/debug_visualizations/
+milestone2/metadata/composite_manifest_debug.csv
