@@ -32,6 +32,16 @@ IMAGE_DIR = GENERATED_DIR / "images"
 LABEL_DIR = GENERATED_DIR / "labels"
 
 RANDOM_SEED = 42
+EXPECTED_CLASS_COUNT = 73
+
+
+# ------------------------------------------------------------
+# TA-required exclusions
+# ------------------------------------------------------------
+
+EXCLUDED_SOURCE_IMAGES = {
+    "images_OBJ054/OBJ054_017.jpg",
+}
 
 
 # ------------------------------------------------------------
@@ -47,7 +57,7 @@ GROUP_MEMBERS = [
 
 
 # ------------------------------------------------------------
-# Required composite counts PER student
+# Composite counts
 # ------------------------------------------------------------
 
 COMPOSITES_PER_MEMBER = {
@@ -56,50 +66,53 @@ COMPOSITES_PER_MEMBER = {
     "test": 15,
 }
 
-# 70 + 15 + 15 = 100 images per student
-
 
 # ------------------------------------------------------------
 # Composite geometry
 # ------------------------------------------------------------
 
-OBJECTS_PER_COMPOSITE = 4
+MIN_OBJECTS_PER_COMPOSITE = 3
+MAX_OBJECTS_PER_COMPOSITE = 5
 
-OUTPUT_WIDTH = 640
-OUTPUT_HEIGHT = 640
-
-GRID_ROWS = 2
-GRID_COLS = 2
-
-CELL_WIDTH = OUTPUT_WIDTH // GRID_COLS
-CELL_HEIGHT = OUTPUT_HEIGHT // GRID_ROWS
-
+TILE_SIZE = 224
 JPEG_QUALITY = 95
 
 
 # ============================================================
-# Helpers
+# Basic helpers
 # ============================================================
 
 def read_csv(path):
-    """Read CSV file into a list of dictionaries."""
+    """Read a CSV file into a list of dictionaries."""
+
     with path.open(
         "r",
         encoding="utf-8",
         newline="",
     ) as file:
-        return list(csv.DictReader(file))
+        return list(
+            csv.DictReader(file)
+        )
 
 
 def ensure_output_directories():
-    """Create generated YOLO folders."""
-    for split in ("train", "val", "test"):
-        (IMAGE_DIR / split).mkdir(
+    """Create YOLO output directories."""
+
+    for split in (
+        "train",
+        "val",
+        "test",
+    ):
+        (
+            IMAGE_DIR / split
+        ).mkdir(
             parents=True,
             exist_ok=True,
         )
 
-        (LABEL_DIR / split).mkdir(
+        (
+            LABEL_DIR / split
+        ).mkdir(
             parents=True,
             exist_ok=True,
         )
@@ -107,80 +120,211 @@ def ensure_output_directories():
 
 def clean_previous_final_outputs():
     """
-    Remove ONLY final production outputs.
+    Remove only production outputs.
 
-    Debug files such as:
-        train_debug_0001.jpg
-    are preserved.
+    Debug files are left untouched.
     """
 
-    final_image_pattern = re.compile(
+    image_pattern = re.compile(
         r"^(train|val|test)_\d{6}\.jpg$"
     )
 
-    final_label_pattern = re.compile(
+    label_pattern = re.compile(
         r"^(train|val|test)_\d{6}\.txt$"
     )
 
-    for split in ("train", "val", "test"):
+    for split in (
+        "train",
+        "val",
+        "test",
+    ):
 
-        image_folder = IMAGE_DIR / split
-        label_folder = LABEL_DIR / split
+        image_folder = (
+            IMAGE_DIR / split
+        )
+
+        label_folder = (
+            LABEL_DIR / split
+        )
 
         for path in image_folder.iterdir():
+
             if (
                 path.is_file()
-                and final_image_pattern.fullmatch(path.name)
+                and image_pattern.fullmatch(
+                    path.name
+                )
             ):
                 path.unlink()
 
         for path in label_folder.iterdir():
+
             if (
                 path.is_file()
-                and final_label_pattern.fullmatch(path.name)
+                and label_pattern.fullmatch(
+                    path.name
+                )
             ):
                 path.unlink()
 
 
-def prepare_source_image(source_path):
+# ============================================================
+# Compact layout logic
+# ============================================================
+
+def get_layout(object_count):
     """
-    Convert a source image to RGB and fit it into
-    one 320 × 320 grid region.
+    Return compact grid geometry.
 
-    ImageOps.fit preserves the output geometry and
-    center-crops where required.
+    3 objects:
+        2 x 2 grid
+        448 x 448 canvas
+        1 empty cell
+
+    4 objects:
+        2 x 2 grid
+        448 x 448 canvas
+
+    5 objects:
+        2 x 3 grid
+        672 x 448 canvas
+        1 empty cell
     """
 
-    with Image.open(source_path) as image:
+    if object_count in (
+        3,
+        4,
+    ):
+        rows = 2
+        cols = 2
 
-        image = image.convert("RGB")
+    elif object_count == 5:
+        rows = 2
+        cols = 3
+
+    else:
+        raise ValueError(
+            f"Unsupported object count: "
+            f"{object_count}. "
+            f"Expected 3, 4, or 5."
+        )
+
+    canvas_width = (
+        cols * TILE_SIZE
+    )
+
+    canvas_height = (
+        rows * TILE_SIZE
+    )
+
+    return (
+        rows,
+        cols,
+        canvas_width,
+        canvas_height,
+    )
+
+
+def prepare_source_image(
+    source_path,
+):
+    """
+    Convert one source image to RGB and fit
+    it into a 224 x 224 tile.
+    """
+
+    with Image.open(
+        source_path
+    ) as image:
+
+        image = image.convert(
+            "RGB"
+        )
 
         fitted = ImageOps.fit(
             image,
-            (CELL_WIDTH, CELL_HEIGHT),
+            (
+                TILE_SIZE,
+                TILE_SIZE,
+            ),
             method=Image.Resampling.LANCZOS,
-            centering=(0.5, 0.5),
+            centering=(
+                0.5,
+                0.5,
+            ),
         )
 
         return fitted
 
 
-def get_cell_box(cell_index):
+def choose_grid_cells(
+    object_count,
+    rows,
+    cols,
+    rng,
+):
     """
-    Get pixel bounds for one location in the 2×2 grid.
+    Choose non-overlapping grid cells.
 
-    Returns:
-        x_min, y_min, x_max, y_max
+    Because each object occupies exactly one cell,
+    overlap is impossible by construction.
     """
 
-    row = cell_index // GRID_COLS
-    col = cell_index % GRID_COLS
+    all_cells = [
+        (
+            row,
+            col,
+        )
+        for row in range(
+            rows
+        )
+        for col in range(
+            cols
+        )
+    ]
 
-    x_min = col * CELL_WIDTH
-    y_min = row * CELL_HEIGHT
+    if object_count > len(
+        all_cells
+    ):
+        raise ValueError(
+            f"Cannot place "
+            f"{object_count} objects "
+            f"in a {rows}x{cols} grid."
+        )
 
-    x_max = x_min + CELL_WIDTH
-    y_max = y_min + CELL_HEIGHT
+    selected_cells = (
+        rng.sample(
+            all_cells,
+            object_count,
+        )
+    )
+
+    return selected_cells
+
+
+def cell_to_pixel_box(
+    row,
+    col,
+):
+    """
+    Convert grid position into pixel coordinates.
+    """
+
+    x_min = (
+        col * TILE_SIZE
+    )
+
+    y_min = (
+        row * TILE_SIZE
+    )
+
+    x_max = (
+        x_min + TILE_SIZE
+    )
+
+    y_max = (
+        y_min + TILE_SIZE
+    )
 
     return (
         x_min,
@@ -190,30 +334,88 @@ def get_cell_box(cell_index):
     )
 
 
+def boxes_overlap(
+    box_a,
+    box_b,
+):
+    """
+    Return True if two boxes overlap
+    with positive area.
+
+    Edge-touching is allowed.
+    """
+
+    (
+        ax1,
+        ay1,
+        ax2,
+        ay2,
+    ) = box_a
+
+    (
+        bx1,
+        by1,
+        bx2,
+        by2,
+    ) = box_b
+
+    return (
+        ax1 < bx2
+        and ax2 > bx1
+        and ay1 < by2
+        and ay2 > by1
+    )
+
+
+# ============================================================
+# YOLO helpers
+# ============================================================
+
 def pixel_box_to_yolo(
     x_min,
     y_min,
     x_max,
     y_max,
+    canvas_width,
+    canvas_height,
 ):
     """
-    Convert pixel bounding box into normalized
+    Convert pixel coordinates to normalized
     YOLO format:
 
         x_center y_center width height
     """
 
-    width = x_max - x_min
-    height = y_max - y_min
+    box_width = (
+        x_max - x_min
+    )
 
-    x_center = x_min + width / 2
-    y_center = y_min + height / 2
+    box_height = (
+        y_max - y_min
+    )
+
+    x_center = (
+        x_min
+        + box_width / 2
+    )
+
+    y_center = (
+        y_min
+        + box_height / 2
+    )
 
     return (
-        x_center / OUTPUT_WIDTH,
-        y_center / OUTPUT_HEIGHT,
-        width / OUTPUT_WIDTH,
-        height / OUTPUT_HEIGHT,
+        x_center
+        / canvas_width,
+
+        y_center
+        / canvas_height,
+
+        box_width
+        / canvas_width,
+
+        box_height
+        / canvas_height,
     )
 
 
@@ -223,34 +425,87 @@ def validate_yolo_box(
     width,
     height,
 ):
-    """Verify normalized YOLO coordinates."""
+    """Validate normalized YOLO coordinates."""
 
     if not (
-        0 <= x_center <= 1
-        and 0 <= y_center <= 1
-        and 0 < width <= 1
-        and 0 < height <= 1
+        0.0 <= x_center <= 1.0
+        and 0.0 <= y_center <= 1.0
+        and 0.0 < width <= 1.0
+        and 0.0 < height <= 1.0
     ):
         raise ValueError(
-            "Invalid normalized YOLO box: "
-            f"{x_center}, {y_center}, "
-            f"{width}, {height}"
+            "Invalid YOLO box: "
+            f"{x_center}, "
+            f"{y_center}, "
+            f"{width}, "
+            f"{height}"
+        )
+
+    x_min = (
+        x_center
+        - width / 2
+    )
+
+    x_max = (
+        x_center
+        + width / 2
+    )
+
+    y_min = (
+        y_center
+        - height / 2
+    )
+
+    y_max = (
+        y_center
+        + height / 2
+    )
+
+    tolerance = 1e-6
+
+    if not (
+        -tolerance
+        <= x_min
+        <= 1.0 + tolerance
+
+        and -tolerance
+        <= x_max
+        <= 1.0 + tolerance
+
+        and -tolerance
+        <= y_min
+        <= 1.0 + tolerance
+
+        and -tolerance
+        <= y_max
+        <= 1.0 + tolerance
+    ):
+        raise ValueError(
+            "YOLO bounding box extends "
+            "outside normalized image bounds."
         )
 
 
 # ============================================================
-# Load and prepare source pools
+# Load source pools
 # ============================================================
 
-def load_source_pools(rng):
+def load_source_pools(
+    rng,
+):
 
-    if not SOURCE_SPLIT_MANIFEST.exists():
+    if not (
+        SOURCE_SPLIT_MANIFEST.exists()
+    ):
         raise FileNotFoundError(
-            "source_split_manifest.csv is missing. "
+            "source_split_manifest.csv "
+            "is missing. "
             "Run create_source_splits.py first."
         )
 
-    rows = read_csv(SOURCE_SPLIT_MANIFEST)
+    rows = read_csv(
+        SOURCE_SPLIT_MANIFEST
+    )
 
     required_columns = {
         "source_path",
@@ -263,46 +518,152 @@ def load_source_pools(rng):
 
     if not rows:
         raise ValueError(
-            "source_split_manifest.csv is empty."
+            "source_split_manifest.csv "
+            "is empty."
         )
 
-    if not required_columns.issubset(rows[0].keys()):
+    if not (
+        required_columns.issubset(
+            rows[0].keys()
+        )
+    ):
         raise ValueError(
-            "Source split manifest is missing "
-            "required columns."
+            "source_split_manifest.csv "
+            "is missing required columns."
+        )
+
+    # --------------------------------------------------------
+    # TA exclusion check
+    # --------------------------------------------------------
+
+    leaked_exclusions = {
+        row["source_path"]
+        for row in rows
+        if row["source_path"]
+        in EXCLUDED_SOURCE_IMAGES
+    }
+
+    if leaked_exclusions:
+        raise ValueError(
+            "Excluded source image found "
+            "in source split manifest: "
+            + ", ".join(
+                sorted(
+                    leaked_exclusions
+                )
+            )
         )
 
     pools = {
-        "train": defaultdict(list),
-        "val": defaultdict(list),
-        "test": defaultdict(list),
+        "train":
+            defaultdict(list),
+
+        "val":
+            defaultdict(list),
+
+        "test":
+            defaultdict(list),
     }
 
     for row in rows:
 
-        split = row["split"]
-        object_id = row["object_id"]
+        split = row[
+            "split"
+        ]
+
+        object_id = row[
+            "object_id"
+        ]
 
         if split not in pools:
             raise ValueError(
-                f"Unexpected split: {split}"
+                f"Unexpected split: "
+                f"{split}"
             )
 
-        pools[split][object_id].append(row)
+        class_index = int(
+            row[
+                "class_index"
+            ]
+        )
 
-    # Sort first, then shuffle reproducibly.
+        if not (
+            0
+            <= class_index
+            < EXPECTED_CLASS_COUNT
+        ):
+            raise ValueError(
+                f"Invalid class index "
+                f"{class_index} for "
+                f"{row['source_path']}."
+            )
+
+        pools[
+            split
+        ][
+            object_id
+        ].append(
+            row
+        )
+
+    # --------------------------------------------------------
+    # Confirm every split contains all classes
+    # --------------------------------------------------------
+
+    expected_ids = {
+        f"OBJ{i:03d}"
+        for i in range(
+            1,
+            EXPECTED_CLASS_COUNT + 1,
+        )
+    }
+
     for split in pools:
 
-        for object_id in pools[split]:
+        missing = (
+            expected_ids
+            - set(
+                pools[
+                    split
+                ].keys()
+            )
+        )
 
-            class_rows = sorted(
-                pools[split][object_id],
-                key=lambda r: r["source_path"],
+        if missing:
+            raise ValueError(
+                f"{split}: missing source "
+                f"pools for classes "
+                f"{sorted(missing)}"
             )
 
-            rng.shuffle(class_rows)
+        # Sort then shuffle deterministically.
+        for object_id in (
+            pools[
+                split
+            ]
+        ):
 
-            pools[split][object_id] = class_rows
+            class_rows = sorted(
+                pools[
+                    split
+                ][
+                    object_id
+                ],
+                key=lambda row:
+                    row[
+                        "source_path"
+                    ],
+            )
+
+            rng.shuffle(
+                class_rows
+            )
+
+            pools[
+                split
+            ][
+                object_id
+            ] = class_rows
 
     return pools
 
@@ -313,64 +674,97 @@ def load_source_pools(rng):
 
 def select_balanced_classes(
     split,
+    object_count,
     pools,
     source_pointer,
     class_usage,
     rng,
 ):
     """
-    Select four different classes.
-
-    Classes with the lowest current usage are preferred.
-    Random tie-breaking keeps generation deterministic
-    while avoiding a rigid repeated ordering.
+    Select distinct classes while keeping
+    overall class usage balanced.
     """
 
     candidates = []
 
-    for object_id in sorted(pools[split].keys()):
+    for object_id in sorted(
+        pools[
+            split
+        ].keys()
+    ):
 
         available_count = len(
-            pools[split][object_id]
+            pools[
+                split
+            ][
+                object_id
+            ]
         )
 
-        used_count = source_pointer[
-            split
-        ][object_id]
+        used_count = (
+            source_pointer[
+                split
+            ][
+                object_id
+            ]
+        )
 
-        remaining = available_count - used_count
+        remaining = (
+            available_count
+            - used_count
+        )
 
         if remaining > 0:
-            candidates.append(object_id)
+            candidates.append(
+                object_id
+            )
 
-    if len(candidates) < OBJECTS_PER_COMPOSITE:
+    if len(
+        candidates
+    ) < object_count:
+
         raise RuntimeError(
-            f"Not enough classes with remaining "
-            f"source images in {split}."
+            f"Not enough classes with "
+            f"unused source images "
+            f"in {split}. "
+            f"Need {object_count}, "
+            f"found {len(candidates)}."
         )
 
-    # Random value is used only as a deterministic
-    # tie breaker because rng has a fixed seed.
     scored = [
         (
-            class_usage[split][object_id],
+            class_usage[
+                split
+            ][
+                object_id
+            ],
+
             rng.random(),
+
             object_id,
         )
-        for object_id in candidates
+        for object_id
+        in candidates
     ]
 
     scored.sort()
 
     selected = [
         item[2]
-        for item in scored[:OBJECTS_PER_COMPOSITE]
+        for item in scored[
+            :object_count
+        ]
     ]
 
-    if len(set(selected)) != OBJECTS_PER_COMPOSITE:
+    if len(
+        set(
+            selected
+        )
+    ) != object_count:
+
         raise RuntimeError(
-            "Duplicate class selected within "
-            "one composite."
+            "Duplicate class selected "
+            "within one composite."
         )
 
     return selected
@@ -382,27 +776,42 @@ def take_source_row(
     pools,
     source_pointer,
 ):
-    """Take the next unused source image for a class."""
+    """Take next unused source image."""
 
-    pointer = source_pointer[
-        split
-    ][object_id]
+    pointer = (
+        source_pointer[
+            split
+        ][
+            object_id
+        ]
+    )
 
-    class_pool = pools[
-        split
-    ][object_id]
+    class_pool = (
+        pools[
+            split
+        ][
+            object_id
+        ]
+    )
 
-    if pointer >= len(class_pool):
+    if pointer >= len(
+        class_pool
+    ):
         raise RuntimeError(
-            f"No unused source images remain for "
+            f"No unused source image "
+            f"remains for "
             f"{object_id} in {split}."
         )
 
-    row = class_pool[pointer]
+    row = class_pool[
+        pointer
+    ]
 
     source_pointer[
         split
-    ][object_id] += 1
+    ][
+        object_id
+    ] += 1
 
     return row
 
@@ -416,60 +825,181 @@ def generate_one_composite(
     composite_number,
     member,
     selected_rows,
+    rng,
 ):
 
+    object_count = len(
+        selected_rows
+    )
+
+    if not (
+        MIN_OBJECTS_PER_COMPOSITE
+        <= object_count
+        <= MAX_OBJECTS_PER_COMPOSITE
+    ):
+        raise ValueError(
+            f"Composite must contain "
+            f"{MIN_OBJECTS_PER_COMPOSITE}-"
+            f"{MAX_OBJECTS_PER_COMPOSITE} "
+            f"objects."
+        )
+
+    (
+        grid_rows,
+        grid_cols,
+        canvas_width,
+        canvas_height,
+    ) = get_layout(
+        object_count
+    )
+
+    selected_cells = (
+        choose_grid_cells(
+            object_count=
+                object_count,
+
+            rows=
+                grid_rows,
+
+            cols=
+                grid_cols,
+
+            rng=
+                rng,
+        )
+    )
+
     image_name = (
-        f"{split}_{composite_number:06d}.jpg"
+        f"{split}_"
+        f"{composite_number:06d}.jpg"
     )
 
     label_name = (
-        f"{split}_{composite_number:06d}.txt"
+        f"{split}_"
+        f"{composite_number:06d}.txt"
     )
 
     image_path = (
-        IMAGE_DIR / split / image_name
+        IMAGE_DIR
+        / split
+        / image_name
     )
 
     label_path = (
-        LABEL_DIR / split / label_name
+        LABEL_DIR
+        / split
+        / label_name
     )
 
     composite = Image.new(
         "RGB",
-        (OUTPUT_WIDTH, OUTPUT_HEIGHT),
+        (
+            canvas_width,
+            canvas_height,
+        ),
+        color=(
+            255,
+            255,
+            255,
+        ),
     )
 
     annotation_lines = []
     manifest_rows = []
+    pixel_boxes = []
 
-    for position, row in enumerate(
-        selected_rows
+    for (
+        position,
+        (
+            row_data,
+            cell,
+        ),
+    ) in enumerate(
+        zip(
+            selected_rows,
+            selected_cells,
+        ),
+        start=1,
     ):
 
         source_path = (
-            PROJECT_ROOT / row["source_path"]
+            PROJECT_ROOT
+            / row_data[
+                "source_path"
+            ]
         )
 
-        if not source_path.exists():
+        if not (
+            source_path.exists()
+        ):
             raise FileNotFoundError(
                 f"Missing source image: "
                 f"{source_path}"
             )
 
-        tile = prepare_source_image(
-            source_path
-        )
+        if (
+            row_data[
+                "source_path"
+            ]
+            in EXCLUDED_SOURCE_IMAGES
+        ):
+            raise ValueError(
+                "Excluded source image "
+                "reached generation: "
+                f"{row_data['source_path']}"
+            )
+
+        (
+            grid_row,
+            grid_col,
+        ) = cell
 
         (
             x_min,
             y_min,
             x_max,
             y_max,
-        ) = get_cell_box(position)
+        ) = cell_to_pixel_box(
+            grid_row,
+            grid_col,
+        )
+
+        new_box = (
+            x_min,
+            y_min,
+            x_max,
+            y_max,
+        )
+
+        for existing_box in (
+            pixel_boxes
+        ):
+
+            if boxes_overlap(
+                new_box,
+                existing_box,
+            ):
+                raise RuntimeError(
+                    "Overlapping pasted "
+                    "regions detected."
+                )
+
+        pixel_boxes.append(
+            new_box
+        )
+
+        tile = (
+            prepare_source_image(
+                source_path
+            )
+        )
 
         composite.paste(
             tile,
-            (x_min, y_min),
+            (
+                x_min,
+                y_min,
+            ),
         )
 
         (
@@ -478,10 +1008,23 @@ def generate_one_composite(
             width_norm,
             height_norm,
         ) = pixel_box_to_yolo(
-            x_min,
-            y_min,
-            x_max,
-            y_max,
+            x_min=
+                x_min,
+
+            y_min=
+                y_min,
+
+            x_max=
+                x_max,
+
+            y_max=
+                y_max,
+
+            canvas_width=
+                canvas_width,
+
+            canvas_height=
+                canvas_height,
         )
 
         validate_yolo_box(
@@ -492,8 +1035,20 @@ def generate_one_composite(
         )
 
         class_index = int(
-            row["class_index"]
+            row_data[
+                "class_index"
+            ]
         )
+
+        if not (
+            0
+            <= class_index
+            < EXPECTED_CLASS_COUNT
+        ):
+            raise ValueError(
+                f"Invalid class index "
+                f"{class_index}."
+            )
 
         annotation_lines.append(
             f"{class_index} "
@@ -506,36 +1061,74 @@ def generate_one_composite(
         manifest_rows.append(
             {
                 "composite_image":
-                    image_path.relative_to(
+                    image_path
+                    .relative_to(
                         PROJECT_ROOT
-                    ).as_posix(),
+                    )
+                    .as_posix(),
 
                 "label_file":
-                    label_path.relative_to(
+                    label_path
+                    .relative_to(
                         PROJECT_ROOT
-                    ).as_posix(),
+                    )
+                    .as_posix(),
 
-                "split": split,
+                "split":
+                    split,
 
-                "generator_member": member,
+                "generator_member":
+                    member,
+
+                "object_count":
+                    object_count,
 
                 "object_position":
-                    position + 1,
+                    position,
 
                 "source_path":
-                    row["source_path"],
+                    row_data[
+                        "source_path"
+                    ],
 
                 "source_md5":
-                    row["md5"],
+                    row_data[
+                        "md5"
+                    ],
 
                 "object_id":
-                    row["object_id"],
+                    row_data[
+                        "object_id"
+                    ],
 
                 "object_name":
-                    row["object_name"],
+                    row_data[
+                        "object_name"
+                    ],
 
                 "class_index":
                     class_index,
+
+                "grid_rows":
+                    grid_rows,
+
+                "grid_cols":
+                    grid_cols,
+
+                "grid_row":
+                    grid_row,
+
+                "grid_col":
+                    grid_col,
+
+                "canvas_width":
+                    canvas_width,
+
+                "canvas_height":
+                    canvas_height,
+
+                "tile_size":
+                    TILE_SIZE,
 
                 "x_min":
                     x_min,
@@ -566,11 +1159,15 @@ def generate_one_composite(
     composite.save(
         image_path,
         format="JPEG",
-        quality=JPEG_QUALITY,
+        quality=
+            JPEG_QUALITY,
     )
 
     label_path.write_text(
-        "\n".join(annotation_lines) + "\n",
+        "\n".join(
+            annotation_lines
+        )
+        + "\n",
         encoding="utf-8",
     )
 
@@ -586,89 +1183,331 @@ def run_integrity_checks(
 ):
 
     # --------------------------------------------------------
+    # Explicit exclusion
+    # --------------------------------------------------------
+
+    leaked_exclusions = {
+        row["source_path"]
+        for row in manifest_rows
+        if row["source_path"]
+        in EXCLUDED_SOURCE_IMAGES
+    }
+
+    if leaked_exclusions:
+        raise ValueError(
+            "Excluded source image leaked "
+            "into generated dataset."
+        )
+
+    # --------------------------------------------------------
     # No source reuse
     # --------------------------------------------------------
 
     source_paths = [
-        row["source_path"]
-        for row in manifest_rows
+        row[
+            "source_path"
+        ]
+        for row
+        in manifest_rows
     ]
 
-    if len(source_paths) != len(
-        set(source_paths)
+    if len(
+        source_paths
+    ) != len(
+        set(
+            source_paths
+        )
     ):
         raise ValueError(
             "A source image was reused."
         )
 
     # --------------------------------------------------------
-    # No MD5 reuse
+    # No exact duplicate reuse
     # --------------------------------------------------------
 
     hashes = [
-        row["source_md5"]
-        for row in manifest_rows
+        row[
+            "source_md5"
+        ]
+        for row
+        in manifest_rows
     ]
 
-    if len(hashes) != len(
-        set(hashes)
+    if len(
+        hashes
+    ) != len(
+        set(
+            hashes
+        )
     ):
         raise ValueError(
-            "An exact duplicate source image "
-            "was reused."
+            "An exact duplicate source "
+            "image was reused."
         )
 
     # --------------------------------------------------------
-    # Every composite has four annotations
+    # Composite checks
     # --------------------------------------------------------
 
-    composite_counts = Counter(
-        row["composite_image"]
-        for row in manifest_rows
-    )
-
-    invalid = {
-        image: count
-        for image, count
-        in composite_counts.items()
-        if count != OBJECTS_PER_COMPOSITE
-    }
-
-    if invalid:
-        raise ValueError(
-            "One or more composites do not "
-            "contain exactly four annotations."
-        )
-
-    # --------------------------------------------------------
-    # Four unique classes per composite
-    # --------------------------------------------------------
-
-    classes_by_composite = defaultdict(
-        set
+    rows_by_composite = (
+        defaultdict(list)
     )
 
     for row in manifest_rows:
-        classes_by_composite[
-            row["composite_image"]
-        ].add(
-            row["object_id"]
+
+        rows_by_composite[
+            row[
+                "composite_image"
+            ]
+        ].append(
+            row
         )
 
-    for image, classes in (
-        classes_by_composite.items()
+    for (
+        image,
+        rows,
+    ) in (
+        rows_by_composite.items()
     ):
-        if len(classes) != (
-            OBJECTS_PER_COMPOSITE
+
+        annotation_count = len(
+            rows
+        )
+
+        if not (
+            MIN_OBJECTS_PER_COMPOSITE
+            <= annotation_count
+            <= MAX_OBJECTS_PER_COMPOSITE
         ):
             raise ValueError(
-                f"{image} does not contain "
-                f"four unique classes."
+                f"{image} has "
+                f"{annotation_count} "
+                f"annotations."
             )
+
+        metadata_counts = {
+            int(
+                row[
+                    "object_count"
+                ]
+            )
+            for row in rows
+        }
+
+        if metadata_counts != {
+            annotation_count
+        }:
+            raise ValueError(
+                f"{image} has inconsistent "
+                f"object_count metadata."
+            )
+
+        class_ids = [
+            row[
+                "object_id"
+            ]
+            for row in rows
+        ]
+
+        if len(
+            class_ids
+        ) != len(
+            set(
+                class_ids
+            )
+        ):
+            raise ValueError(
+                f"{image} contains "
+                f"duplicate classes."
+            )
+
+        boxes = [
+            (
+                int(
+                    row[
+                        "x_min"
+                    ]
+                ),
+                int(
+                    row[
+                        "y_min"
+                    ]
+                ),
+                int(
+                    row[
+                        "x_max"
+                    ]
+                ),
+                int(
+                    row[
+                        "y_max"
+                    ]
+                ),
+            )
+            for row in rows
+        ]
+
+        for (
+            index,
+            box_a,
+        ) in enumerate(
+            boxes
+        ):
+
+            for box_b in (
+                boxes[
+                    index + 1:
+                ]
+            ):
+
+                if boxes_overlap(
+                    box_a,
+                    box_b,
+                ):
+                    raise ValueError(
+                        f"{image} contains "
+                        f"overlapping regions."
+                    )
+
+        (
+            expected_rows,
+            expected_cols,
+            expected_width,
+            expected_height,
+        ) = get_layout(
+            annotation_count
+        )
+
+        for row in rows:
+
+            if (
+                int(
+                    row[
+                        "grid_rows"
+                    ]
+                )
+                != expected_rows
+            ):
+                raise ValueError(
+                    f"{image}: incorrect "
+                    f"grid row metadata."
+                )
+
+            if (
+                int(
+                    row[
+                        "grid_cols"
+                    ]
+                )
+                != expected_cols
+            ):
+                raise ValueError(
+                    f"{image}: incorrect "
+                    f"grid column metadata."
+                )
+
+            if (
+                int(
+                    row[
+                        "canvas_width"
+                    ]
+                )
+                != expected_width
+            ):
+                raise ValueError(
+                    f"{image}: incorrect "
+                    f"canvas width."
+                )
+
+            if (
+                int(
+                    row[
+                        "canvas_height"
+                    ]
+                )
+                != expected_height
+            ):
+                raise ValueError(
+                    f"{image}: incorrect "
+                    f"canvas height."
+                )
+
+    # --------------------------------------------------------
+    # Cross-split leakage checks
+    # --------------------------------------------------------
+
+    source_to_splits = (
+        defaultdict(set)
+    )
+
+    hash_to_splits = (
+        defaultdict(set)
+    )
+
+    for row in manifest_rows:
+
+        source_to_splits[
+            row[
+                "source_path"
+            ]
+        ].add(
+            row[
+                "split"
+            ]
+        )
+
+        hash_to_splits[
+            row[
+                "source_md5"
+            ]
+        ].add(
+            row[
+                "split"
+            ]
+        )
+
+    source_violations = {
+        source: splits
+        for (
+            source,
+            splits,
+        ) in (
+            source_to_splits.items()
+        )
+        if len(
+            splits
+        ) > 1
+    }
+
+    hash_violations = {
+        digest: splits
+        for (
+            digest,
+            splits,
+        ) in (
+            hash_to_splits.items()
+        )
+        if len(
+            splits
+        ) > 1
+    }
+
+    if source_violations:
+        raise ValueError(
+            "Source-image leakage "
+            "detected across splits."
+        )
+
+    if hash_violations:
+        raise ValueError(
+            "Duplicate-image leakage "
+            "detected across splits."
+        )
 
 
 # ============================================================
-# Save manifests
+# Save metadata
 # ============================================================
 
 def save_final_manifest(
@@ -680,12 +1519,20 @@ def save_final_manifest(
         "label_file",
         "split",
         "generator_member",
+        "object_count",
         "object_position",
         "source_path",
         "source_md5",
         "object_id",
         "object_name",
         "class_index",
+        "grid_rows",
+        "grid_cols",
+        "grid_row",
+        "grid_col",
+        "canvas_width",
+        "canvas_height",
+        "tile_size",
         "x_min",
         "y_min",
         "x_max",
@@ -702,12 +1549,16 @@ def save_final_manifest(
         newline="",
     ) as file:
 
-        writer = csv.DictWriter(
-            file,
-            fieldnames=fieldnames,
+        writer = (
+            csv.DictWriter(
+                file,
+                fieldnames=
+                    fieldnames,
+            )
         )
 
         writer.writeheader()
+
         writer.writerows(
             manifest_rows
         )
@@ -719,12 +1570,26 @@ def save_class_distribution(
 
     counts = Counter(
         (
-            row["split"],
-            row["object_id"],
-            row["object_name"],
+            row[
+                "split"
+            ],
+            row[
+                "object_id"
+            ],
+            row[
+                "object_name"
+            ],
         )
-        for row in manifest_rows
+        for row
+        in manifest_rows
     )
+
+    fieldnames = [
+        "split",
+        "object_id",
+        "object_name",
+        "annotation_count",
+    ]
 
     with CLASS_DISTRIBUTION.open(
         "w",
@@ -732,34 +1597,40 @@ def save_class_distribution(
         newline="",
     ) as file:
 
-        fieldnames = [
-            "split",
-            "object_id",
-            "object_name",
-            "annotation_count",
-        ]
-
-        writer = csv.DictWriter(
-            file,
-            fieldnames=fieldnames,
+        writer = (
+            csv.DictWriter(
+                file,
+                fieldnames=
+                    fieldnames,
+            )
         )
 
         writer.writeheader()
 
         for (
-            split,
-            object_id,
-            object_name,
-        ), count in sorted(
+            (
+                split,
+                object_id,
+                object_name,
+            ),
+            count,
+        ) in sorted(
             counts.items()
         ):
 
             writer.writerow(
                 {
-                    "split": split,
-                    "object_id": object_id,
-                    "object_name": object_name,
-                    "annotation_count": count,
+                    "split":
+                        split,
+
+                    "object_id":
+                        object_id,
+
+                    "object_name":
+                        object_name,
+
+                    "annotation_count":
+                        count,
                 }
             )
 
@@ -771,15 +1642,20 @@ def save_class_distribution(
 def main():
 
     print(
-        "\nFINAL MILESTONE 2 DATASET GENERATION"
+        "\nFINAL MILESTONE 2 "
+        "DATASET GENERATION"
     )
-    print("=" * 65)
+
+    print(
+        "=" * 65
+    )
 
     rng = random.Random(
         RANDOM_SEED
     )
 
     ensure_output_directories()
+
     clean_previous_final_outputs()
 
     pools = load_source_pools(
@@ -787,7 +1663,8 @@ def main():
     )
 
     source_pointer = {
-        split: defaultdict(int)
+        split:
+            defaultdict(int)
         for split in (
             "train",
             "val",
@@ -796,7 +1673,8 @@ def main():
     }
 
     class_usage = {
-        split: Counter()
+        split:
+            Counter()
         for split in (
             "train",
             "val",
@@ -813,7 +1691,7 @@ def main():
     }
 
     # --------------------------------------------------------
-    # Generate exactly 100 composites per student
+    # Generate composites
     # --------------------------------------------------------
 
     for member in GROUP_MEMBERS:
@@ -843,13 +1721,32 @@ def main():
                     split
                 ] += 1
 
+                object_count = (
+                    rng.randint(
+                        MIN_OBJECTS_PER_COMPOSITE,
+                        MAX_OBJECTS_PER_COMPOSITE,
+                    )
+                )
+
                 selected_classes = (
                     select_balanced_classes(
-                        split=split,
-                        pools=pools,
-                        source_pointer=source_pointer,
-                        class_usage=class_usage,
-                        rng=rng,
+                        split=
+                            split,
+
+                        object_count=
+                            object_count,
+
+                        pools=
+                            pools,
+
+                        source_pointer=
+                            source_pointer,
+
+                        class_usage=
+                            class_usage,
+
+                        rng=
+                            rng,
                     )
                 )
 
@@ -859,11 +1756,20 @@ def main():
                     selected_classes
                 ):
 
-                    row = take_source_row(
-                        split=split,
-                        object_id=object_id,
-                        pools=pools,
-                        source_pointer=source_pointer,
+                    row = (
+                        take_source_row(
+                            split=
+                                split,
+
+                            object_id=
+                                object_id,
+
+                            pools=
+                                pools,
+
+                            source_pointer=
+                                source_pointer,
+                        )
                     )
 
                     selected_rows.append(
@@ -872,27 +1778,37 @@ def main():
 
                     class_usage[
                         split
-                    ][object_id] += 1
+                    ][
+                        object_id
+                    ] += 1
 
-                rows_created = (
+                created_rows = (
                     generate_one_composite(
-                        split=split,
-                        composite_number=(
+                        split=
+                            split,
+
+                        composite_number=
                             split_composite_number[
                                 split
-                            ]
-                        ),
-                        member=member,
-                        selected_rows=selected_rows,
+                            ],
+
+                        member=
+                            member,
+
+                        selected_rows=
+                            selected_rows,
+
+                        rng=
+                            rng,
                     )
                 )
 
                 manifest_rows.extend(
-                    rows_created
+                    created_rows
                 )
 
     # --------------------------------------------------------
-    # Validate everything
+    # Validate and save
     # --------------------------------------------------------
 
     run_integrity_checks(
@@ -908,17 +1824,19 @@ def main():
     )
 
     # --------------------------------------------------------
-    # Summaries
+    # Summary
     # --------------------------------------------------------
 
-    composite_counts = Counter()
-
-    member_composites = defaultdict(
-        set
+    member_composites = (
+        defaultdict(set)
     )
 
-    split_composites = defaultdict(
-        set
+    split_composites = (
+        defaultdict(set)
+    )
+
+    rows_by_composite = (
+        defaultdict(list)
     )
 
     for row in manifest_rows:
@@ -928,37 +1846,91 @@ def main():
         ]
 
         member_composites[
-            row["generator_member"]
-        ].add(image)
+            row[
+                "generator_member"
+            ]
+        ].add(
+            image
+        )
 
         split_composites[
-            row["split"]
-        ].add(image)
+            row[
+                "split"
+            ]
+        ].add(
+            image
+        )
+
+        rows_by_composite[
+            image
+        ].append(
+            row
+        )
+
+    object_count_distribution = (
+        Counter(
+            len(rows)
+            for rows in (
+                rows_by_composite.values()
+            )
+        )
+    )
+
+    layout_distribution = (
+        Counter()
+    )
+
+    for rows in (
+        rows_by_composite.values()
+    ):
+
+        first = rows[0]
+
+        layout_distribution[
+            (
+                int(
+                    first[
+                        "object_count"
+                    ]
+                ),
+
+                f"{first['grid_rows']}"
+                f"x"
+                f"{first['grid_cols']}",
+
+                f"{first['canvas_width']}"
+                f"x"
+                f"{first['canvas_height']}",
+            )
+        ] += 1
 
     total_composites = len(
-        {
-            row["composite_image"]
-            for row in manifest_rows
-        }
+        rows_by_composite
     )
 
     total_annotations = len(
         manifest_rows
     )
 
-    print("\nDataset summary:")
+    print(
+        "\nDataset summary:"
+    )
+
     print(
         f"  Train composites: "
         f"{len(split_composites['train'])}"
     )
+
     print(
         f"  Val composites:   "
         f"{len(split_composites['val'])}"
     )
+
     print(
         f"  Test composites:  "
         f"{len(split_composites['test'])}"
     )
+
     print(
         f"  Total composites: "
         f"{total_composites}"
@@ -969,9 +1941,48 @@ def main():
         f"{total_annotations}"
     )
 
-    print("\nPer-student generation:")
+    print(
+        "\nObjects per composite:"
+    )
+
+    for object_count in range(
+        MIN_OBJECTS_PER_COMPOSITE,
+        MAX_OBJECTS_PER_COMPOSITE + 1,
+    ):
+
+        print(
+            f"  {object_count} objects: "
+            f"{object_count_distribution[object_count]}"
+        )
+
+    print(
+        "\nCompact layouts:"
+    )
+
+    for (
+        (
+            object_count,
+            grid_shape,
+            canvas_shape,
+        ),
+        count,
+    ) in sorted(
+        layout_distribution.items()
+    ):
+
+        print(
+            f"  {object_count} objects -> "
+            f"{grid_shape} grid / "
+            f"{canvas_shape} canvas: "
+            f"{count}"
+        )
+
+    print(
+        "\nPer-member allocation:"
+    )
 
     for member in GROUP_MEMBERS:
+
         count = len(
             member_composites[
                 member
@@ -979,16 +1990,21 @@ def main():
         )
 
         print(
-            f"  {member}: {count}"
+            f"  {member}: "
+            f"{count}"
         )
 
-        if count < 100:
+        if count != 100:
+
             raise ValueError(
-                f"{member} has fewer "
-                f"than 100 composites."
+                f"{member} should have "
+                f"100 allocated composites, "
+                f"found {count}."
             )
 
-    print("\nClass-balance check:")
+    print(
+        "\nClass-balance check:"
+    )
 
     for split in (
         "train",
@@ -996,11 +2012,18 @@ def main():
         "test",
     ):
 
-        counts = list(
+        counts = [
             class_usage[
                 split
-            ].values()
-        )
+            ].get(
+                f"OBJ{i:03d}",
+                0,
+            )
+            for i in range(
+                1,
+                EXPECTED_CLASS_COUNT + 1,
+            )
+        ]
 
         print(
             f"  {split}: "
@@ -1008,34 +2031,89 @@ def main():
             f"max={max(counts)}"
         )
 
-    print("\nIntegrity checks:")
+    print(
+        "\nIntegrity checks:"
+    )
+
+    print(
+        "  Explicit exclusion absent: PASS"
+    )
+
     print(
         "  No source reuse: PASS"
     )
+
     print(
         "  No MD5 reuse: PASS"
     )
+
     print(
-        "  Four unique classes/image: PASS"
-    )
-    print(
-        "  Four annotations/image: PASS"
-    )
-    print(
-        "  Student minimum requirement: PASS"
+        "  No cross-split source leakage: PASS"
     )
 
-    print("\nReproducibility:")
+    print(
+        "  No cross-split MD5 leakage: PASS"
+    )
+
+    print(
+        "  3-5 objects per composite: PASS"
+    )
+
+    print(
+        "  Unique classes per composite: PASS"
+    )
+
+    print(
+        "  Non-overlapping placements: PASS"
+    )
+
+    print(
+        "  Every pasted region labeled: PASS"
+    )
+
+    print(
+        "  Compact layout metadata: PASS"
+    )
+
+    print(
+        "\nGeometry:"
+    )
+
+    print(
+        f"  Source tile size: "
+        f"{TILE_SIZE} x {TILE_SIZE}"
+    )
+
+    print(
+        "  3 objects: 2x2 grid -> 448 x 448"
+    )
+
+    print(
+        "  4 objects: 2x2 grid -> 448 x 448"
+    )
+
+    print(
+        "  5 objects: 2x3 grid -> 672 x 448"
+    )
+
+    print(
+        "\nReproducibility:"
+    )
+
     print(
         f"  Random seed: "
         f"{RANDOM_SEED}"
     )
 
-    print("\nMetadata files:")
+    print(
+        "\nMetadata files:"
+    )
+
     print(
         f"  "
         f"{FINAL_MANIFEST.relative_to(PROJECT_ROOT)}"
     )
+
     print(
         f"  "
         f"{CLASS_DISTRIBUTION.relative_to(PROJECT_ROOT)}"
