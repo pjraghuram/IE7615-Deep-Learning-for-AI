@@ -8,3 +8,7 @@ scikit-learn==1.9.1
 pillow==12.3.0
 jinja2==3.1.6
 ipykernel==7.4.0
+
+# Milestone 2 - YOLOv8 object detection
+ultralytics==8.4.174
+PyYAML
